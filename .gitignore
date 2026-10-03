@@ -1,0 +1,20 @@
+# 本地状态与密钥，绝不进仓库
+_token.txt
+.git-credentials
+config.json
+osclick-cal.json
+**/__pycache__/
+*.pyc
+.venv/
+venv/
+
+# 浏览器 profile 与下载产物
+edge-profile/
+*.crdownload
+
+# 运行期数据
+*.log
+status.json
+download_status.json
+xmol_results.json
+missing_manual.md
