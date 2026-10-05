@@ -1,76 +1,108 @@
-# paper-download（DSH 技能）
+# paper-download (DSH skill)
 
-在 **XMOL 学术**检索论文 → 按**影响因子/期刊**过滤 → 从**出版社官网**下载正式版 PDF → 输出清单。
-包含对付付费墙、反爬虫和"点了下载却没反应"的排查方法。
+**English** | [中文](README.zh-CN.md)
 
-## 它解决什么问题
+Search **XMOL** for papers → filter by **impact factor / journal** → download the **publisher's
+official PDFs** → emit an index. Comes with the troubleshooting knowledge for paywalls, bot
+walls and the classic "I clicked download and nothing happened".
 
-批量下文献通常死在两件事上：
+## What it solves
 
-1. **反爬**：脚本直连出版商 PDF 会吃 403/Cloudflare，但**浏览器会话不会**；
-2. **下载不落盘**：点了 PDF 只打开内置阅读器，文件根本没下来。
+Bulk literature downloading usually dies on two things:
 
-这个技能把两条都处理掉了：用真实浏览器 + 系统级鼠标点击，并预先把浏览器配置成
-"PDF 强制外部下载"。
+1. **Bot walls** — scripted HTTP to a publisher gets 403/Cloudflare, while a real browser session
+   does not;
+2. **Downloads that never land** — clicking a PDF just opens the built-in viewer, so no file is
+   written.
 
-## 四条下载路线
+This skill handles both: it drives a real browser and pre-configures it to *always download PDFs
+instead of rendering them*.
 
-| # | 路线 | 做法 | 适用 |
+## Four download routes
+
+| # | Route | How | Works for |
 |---|---|---|---|
-| 1 | `direct` | HTTP 直连已知 PDF 地址 | 开放获取期刊 |
-| 2 | `session-fetch` | 在落地页里让页面自己 `fetch` PDF | 需要 cookie/订阅鉴权的小文件 |
-| 3 | `landing-link` | 读落地页的 `meta[citation_pdf_url]` / PDF 链接 | 大多数出版社 |
-| 4 | `os-click` | **真实鼠标点击**页面上的 Download PDF | 前三者都失败时兜底 |
+| 1 | `direct` | plain HTTP against a known-good PDF URL | open-access journals |
+| 2 | `session-fetch` | let the article page `fetch` the PDF itself | cookie/entitlement-gated, small files |
+| 3 | `landing-link` | read `meta[citation_pdf_url]` / the page's own PDF link | most publishers |
+| 4 | `os-click` | **genuine OS mouse click** on the page's Download PDF control | the fallback |
 
-全部为**出版社正式版**（开放获取或你自己的机构订阅），不含 arXiv、不含第三方镜像。
+Everything is the **publisher's official version** (open access or your own institutional
+subscription). No arXiv, no third-party mirrors.
 
-## 快速开始
+## Quick start
 
 ```bash
 cd scripts
 
-python launch.py                        # 启动可驱动的浏览器窗口
-python xmol.py search "Altermagnetism"  # 在窗口里真实输入关键词检索
-python xmol.py harvest "Altermagnetism" # 逐页抓结果 → 过滤 IF/期刊
-python download.py run                  # 四级路线下载 + PDF 校验
-python verify.py                        # 生成 README 清单 + 手动下载清单
+python launch.py                        # start the driven browser window
+python xmol.py search "Altermagnetism"  # type the keyword into XMOL for real
+python xmol.py harvest "Altermagnetism" # page through the results, filter by IF/journal
+python resolve.py fill                  # fill in missing DOIs (Crossref)
+python resolve.py oa                    # mark open access + free full-text URLs (OpenAlex)
+python download.py run                  # four routes, with PDF validation
+python verify.py                        # write README index + manual-work list
 ```
 
-常用参数：`download.py run --limit 20`、`--min-if 15`、`download.py status`。
+Useful flags: `download.py run --limit 20`, `--min-if 15`, `--only-oa`, `download.py status`,
+`resolve.py report`.
 
-## 关键经验（SKILL.md 里有完整版）
+## Why not Google Scholar
 
-- **默认 profile 的浏览器打不开调试端口**，必须用独立 profile 启动；
-- **必须设 `plugins.always_open_pdf_externally=true`**，否则点击 PDF 只会打开阅读器；
-- **APS 的 DOI 大小写敏感**：`physrevlett` → 404，`PhysRevLett` → 200；
-- **XMOL 检索接口硬上限 300 条**（10 页 × 30），页面显示的总数可能更大；
-- **反爬拦的是脚本 HTTP，不是浏览器**：同一时刻脚本 403、浏览器 200。
+Google Scholar is **unreachable on this network** (measured: `scholar.google.com` times out after
+21 s, `google.com` connection reset), and Scholar does not host full texts anyway — a click lands
+on the same publisher page, so changing the discovery source does not change whether the PDF can
+be downloaded. XMOL's irreplaceable advantage is that every result carries an `impactFactor`
+field, so the "IF ≥ N" filter is one step.
 
-## 目录
+XMOL's two gaps are covered by two **login-free, bot-wall-free** structured APIs:
+
+| Command | API | Covers |
+|---|---|---|
+| `resolve.py fill` | Crossref | ~6% of XMOL rows have **no DOI**; Crossref resolves the canonical DOI from the title, and also exposes when XMOL's journal label is wrong (a "PRL" row that is really PRB) |
+| `resolve.py oa` | OpenAlex | tells you **which papers are open access and where the free PDF lives**, so the downloader does not waste ~40 s per doomed attempt |
+
+Measured on keyword `Altermagnetism` with 112 candidates: 71 open access, 34 not, 7 unresolved.
+
+## Key lessons (full version in SKILL.md)
+
+- A browser started with the **default profile refuses to open a DevTools port** — use a
+  dedicated profile;
+- you **must disable the built-in PDF viewer** (`plugins.always_open_pdf_externally` plus
+  `Page.setDownloadBehavior`), otherwise clicking a PDF never writes a file;
+- **APS DOIs are case sensitive**: `physrevlett` → 404, `PhysRevLett` → 200;
+- **XMOL's search API caps at 300 rows** (10 pages × 30) even when the page reports more;
+- **bot walls stop scripted HTTP, not the browser** — same machine, same second: script gets 403,
+  browser gets 200;
+- publishers reject a *bare navigation* to their PDF URL but honour a **click on the Download PDF
+  control** — dispatch the click in the page, not by screen coordinates (the window moves).
+
+## Layout
 
 ```
 scripts/
-├── config.py       路径/端口/过滤规则
-├── launch.py       启动可驱动窗口（含 PDF 强制下载配置）
-├── xmol.py         XMOL 检索 / 逐页抓取 / 过滤
-├── download.py     四级下载路线 + 断点续跑
-├── verify.py       校验 + README 清单 + 手动下载清单
-├── cdp.py          极简 CDP 客户端（纯标准库 WebSocket）
-├── oswin.py        系统级鼠标键盘（SetCursorPos / mouse_event / SendInput）
-├── driven.py       定位可驱动窗口并置前台
-└── paperlib.py     PDF 校验与工具函数
+├── config.py       paths, port, filter rules
+├── launch.py       start the driven window (PDF download pre-configured)
+├── xmol.py         XMOL search / pagination / filtering
+├── resolve.py      Crossref DOI fill + OpenAlex open-access pre-flight
+├── download.py     four routes + resumable state
+├── verify.py       validation + README index + manual-work list
+├── cdp.py          minimal CDP client (stdlib-only WebSocket)
+├── oswin.py        OS-level mouse/keyboard (SetCursorPos / mouse_event / SendInput)
+├── driven.py       locate the driven window and bring it to the front
+└── paperlib.py     PDF validation and helpers
 ```
 
-## 依赖
+## Requirements
 
-- Python 3.10+（标准库 + `pypdf` 用于校验）
-- Windows + Edge（或 Chrome）
-- 一个已登录机构网络/校园网的机器（订阅权限来自 IP 或账号登录态）
+- Python 3.10+ (stdlib plus `pypdf` for validation)
+- Windows + Edge (or Chrome)
+- A machine on a network with the subscription you intend to use (IP-based or logged in)
 
-## 合规红线
+## Compliance
 
-只下载开放获取或你本人机构订阅可合法访问的内容；不碰 Sci-Hub 之类的镜像；
-点击节奏放慢（每篇 ≥2 秒），只读不写。
+Only download content that is open access or that your own institution's subscription covers.
+No Sci-Hub-style mirrors. Keep the pace slow (≥2 s between papers) and read-only.
 
 ## License
 

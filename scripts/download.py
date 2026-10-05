@@ -32,17 +32,17 @@ APS_CODE = {"physical review letters": "prl", "physical review x": "prx",
             "physical review research": "prresearch", "physical review applied": "prapplied",
             "physical review b": "prb", "physical review materials": "prm"}
 
-# DOI prefix -> landing page builder (suffix = DOI part after the slash)
+# DOI prefix -> landing page builder. The builder receives the FULL DOI
+# (e.g. 10.1002/advs.202503235): these publisher URLs expect the complete DOI, and
+# dropping the "10.xxxx/" prefix silently lands on a 404 or a bot-challenge page.
 LANDINGS = {
-    "10.1038/": lambda s: f"https://www.nature.com/articles/{s}",
-    "10.1103/": None,  # needs journal code, handled separately
-    "10.1002/": lambda s: f"https://advanced.onlinelibrary.wiley.com/doi/{s}",
-    "10.1021/": lambda s: f"https://pubs.acs.org/doi/{s}",
-    "10.1039/": lambda s: f"https://pubs.rsc.org/en/content/articlelanding/2026/cs/{s}",
-    "10.1088/": lambda s: f"https://iopscience.iop.org/article/{s}",
-    "10.1007/": lambda s: f"https://link.springer.com/article/{s}",
-    "10.21468/": lambda s: f"https://scipost.org/{s}",
-    "": lambda s: f"https://doi.org/{s}",
+    "10.1038/": lambda d: f"https://www.nature.com/articles/{d.split('/', 1)[1]}",
+    "10.1002/": lambda d: f"https://advanced.onlinelibrary.wiley.com/doi/{d}",
+    "10.1021/": lambda d: f"https://pubs.acs.org/doi/{d}",
+    "10.1039/": lambda d: f"https://doi.org/{d}",
+    "10.1088/": lambda d: f"https://iopscience.iop.org/article/{d}",
+    "10.1007/": lambda d: f"https://link.springer.com/article/{d}",
+    "10.21468/": lambda d: f"https://scipost.org/{d}",
 }
 
 DIRECT = {
@@ -65,13 +65,20 @@ def canonical_name(rec):
 
 
 def page_ws(tries=12):
+    """Attach to a real web page tab.
+
+    The driven window accumulates internal tabs (edge://downloads-hub, edge://newtab) as
+    downloads happen; talking to those makes every page read come back empty, so skip them.
+    """
     for _ in range(tries):
         try:
             tabs = json.loads(urllib.request.urlopen(
                 f"http://127.0.0.1:{CFG['port']}/json/list", timeout=8).read())
             pages = [t for t in tabs if t.get("type") == "page"]
-            if pages:
-                return WS(pages[0]["webSocketDebuggerUrl"])
+            web = [t for t in pages if str(t.get("url", "")).startswith(("http://", "https://"))]
+            pick = (web or pages)
+            if pick:
+                return WS(pick[0]["webSocketDebuggerUrl"])
         except Exception:
             pass
         time.sleep(2)
@@ -127,15 +134,30 @@ def rename_to_canonical(rec, fname):
     return canon
 
 
+def canonical_doi(doi):
+    """APS DOIs are case sensitive: 10.1103/physrevx.12.040501 404s, PhysRevX.12.040501 works."""
+    if not doi:
+        return doi
+    m = re.match(r"^(10\.1103/)(physrev[a-z]*)(\..*)$", doi.strip(), re.I)
+    if not m:
+        return doi.strip()
+    head, body, tail = m.groups()
+    nice = {"physrevlett": "PhysRevLett", "physrevx": "PhysRevX", "physrevb": "PhysRevB",
+            "physrevmaterials": "PhysRevMaterials", "physrevapplied": "PhysRevApplied",
+            "physrevresearch": "PhysRevResearch", "physrevfluids": "PhysRevFluids",
+            "physrevaccelbeams": "PhysRevAccelBeams", "physreveducationresearch": "PhysRevEducationResearch"}
+    return head + nice.get(body.lower(), body) + tail
+
+
 def landing_for(rec):
     doi = (rec.get("doi") or "").strip()
     low = doi.lower()
     if low.startswith("10.1103/"):
         code = APS_CODE.get((rec.get("journal") or "").lower())
-        return f"https://journals.aps.org/{code}/abstract/{doi}" if code else None
+        return f"https://journals.aps.org/{code}/abstract/{canonical_doi(doi)}" if code else None
     for pref, fn in LANDINGS.items():
-        if pref and low.startswith(pref):
-            return fn(doi.split("/", 1)[1])
+        if low.startswith(pref):
+            return fn(doi)
     return f"https://doi.org/{doi}" if doi else None
 
 
@@ -176,7 +198,14 @@ JS_FETCH = r"""
 
 
 def route_direct(rec):
-    """1) plain HTTP against a known-good URL."""
+    """1) plain HTTP against a known-good URL.
+
+    Publishers that don't like scripted clients answer 403 / an HTML interstitial here while
+    the browser sails through a moment later — remember that and stop retrying them.
+    """
+    global _DIRECT_BLOCKED
+    if rec.get("doi") and (rec["doi"].split("/")[0]) in _DIRECT_BLOCKED:
+        return None
     for u in direct_urls(rec):
         st, hdrs, data = pl.get(u, timeout=90, maxbytes=60_000_000,
                                 accept="application/pdf,*/*;q=0.8")
@@ -187,7 +216,17 @@ def route_direct(rec):
                 f.write(data)
             return {"file": os.path.basename(path), "pages": pages, "route": "direct",
                     "url": u, "bytes": len(data)}
+        if st in (401, 403, 429) or (isinstance(data, bytes) and b"<!DOCTYPE" in data[:200].upper()):
+            pref = (rec.get("doi") or "").split("/")[0]
+            if pref:
+                _DIRECT_BLOCKED.add(pref)
+            print(f"    direct blocked ({st}) for {pref} — switching straight to browser routes",
+                  flush=True)
+            break
     return None
+
+
+_DIRECT_BLOCKED = set()
 
 
 def route_session_fetch(ws, rec, land):
@@ -219,15 +258,33 @@ def route_session_fetch(ws, rec, land):
     return None
 
 
+def canonical_pdf_url(url):
+    """Normalise publisher PDF URLs that are case sensitive about the DOI tail.
+
+    APS answers 404 for /prl/pdf/10.1103/physrevlett.134.106802 but 200 for
+    /prl/pdf/10.1103/PhysRevLett.134.106802 — and the links a page exposes are often lowercase.
+    """
+    m = re.match(r"^(https?://journals\.aps\.org/[a-z]+/pdf/10\.1103/)(.+)$", url, re.I)
+    if not m:
+        return url
+    head, tail = m.group(1), m.group(2)
+    return head + re.sub(r"^physrev", "PhysRev", tail, flags=re.I)
+
+
 def route_landing_link(ws, rec, land):
-    """3) read the landing page's own PDF link and open it in the browser."""
+    """3) read the landing page's own PDF link and open it in the browser.
+
+    Bot walls (Cloudflare / Radware) serve a challenge page first ("请稍候…",
+    "正在进行安全验证"): the article DOM only appears once the challenge is solved, so we
+    poll for up to ~30s instead of reading the page too early.
+    """
     if not land:
         return None
     js(ws, f"location.href={json.dumps(land)}")
     wait_ready(ws, 25)
     info = None
-    for _ in range(4):
-        time.sleep(2)
+    for _ in range(10):
+        time.sleep(3)
         raw = js(ws, r"""JSON.stringify((()=>{
           const c=[]; const m=document.querySelector('meta[name="citation_pdf_url"]');
           if(m&&m.content) c.push(m.content);
@@ -250,6 +307,7 @@ def route_landing_link(ws, rec, land):
         return None
     cands = ([info["url"]] if info.get("ct") == "application/pdf" else []) + list(info.get("c") or [])
     for u in cands[:3]:
+        u = canonical_pdf_url(u)
         before = set(os.listdir(CFG["downloadDir"]))
         js(ws, f"location.href={json.dumps(u)}")
         time.sleep(2.5)
@@ -307,7 +365,7 @@ def route_click(ws, rec, land):
     return None
 
 
-def run(limit=None, min_if=None, routes=None):
+def run(limit=None, min_if=None, routes=None, only_oa=False):
     import xmol
     payload = xmol.load_results()
     if not payload:
@@ -316,6 +374,13 @@ def run(limit=None, min_if=None, routes=None):
     cands = payload["candidates"]
     if min_if is not None:
         cands = [c for c in cands if (c["if"] or 0) >= min_if]
+    # Pre-flight: when OpenAlex has been consulted (resolve.py oa), papers that are neither
+    # open access nor likely covered by the subscription can be listed instead of retried.
+    skipped_no_oa = [c for c in cands if c.get("oa") and not c["oa"].get("is_oa")]
+    if only_oa:
+        cands = [c for c in cands if (c.get("oa") or {}).get("is_oa")]
+        print(f"--only-oa: 只处理确认开放获取的 {len(cands)} 篇；"
+              f"跳过非 OA {len(skipped_no_oa)} 篇")
     os.makedirs(CFG["downloadDir"], exist_ok=True)
     os.makedirs(CFG["workDir"], exist_ok=True)
     status = {}
@@ -399,13 +464,16 @@ def main():
     if cmd == "run":
         limit = None
         min_if = None
+        only_oa = False
         args = sys.argv[2:]
         for i, a in enumerate(args):
             if a == "--limit" and i + 1 < len(args):
                 limit = int(args[i + 1])
             if a == "--min-if" and i + 1 < len(args):
                 min_if = float(args[i + 1])
-        return run(limit=limit, min_if=min_if)
+            if a == "--only-oa":
+                only_oa = True
+        return run(limit=limit, min_if=min_if, only_oa=only_oa)
     return status_cmd()
 
 

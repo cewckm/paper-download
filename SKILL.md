@@ -72,8 +72,10 @@ cd "{{SCRIPTS_DIR}}"
 python launch.py                       # 1) 启动可驱动的窗口（含 PDF 强制下载配置）
 python xmol.py search "Altermagnetism" # 2) 在窗口里用真实键盘敲关键词并检索（会过验证码那关）
 python xmol.py harvest "Altermagnetism" # 3) 逐页抓结果 → 过滤 IF/期刊 → 存候选池
-python download.py run                 # 4) 逐篇按四条路线下载 + 校验
-python verify.py                       # 5) 校验全部 PDF + 生成 README.md 与手动下载清单
+python resolve.py fill                 # 4) 给 XMOL 没给 DOI 的条目补规范 DOI（Crossref）
+python resolve.py oa                   # 5) 标注是否开放获取 + 免费全文地址（OpenAlex）
+python download.py run                 # 6) 逐篇按四条路线下载 + 校验
+python verify.py                       # 7) 校验全部 PDF + 生成 README.md 与手动下载清单
 ```
 
 常用参数：
@@ -81,10 +83,29 @@ python verify.py                       # 5) 校验全部 PDF + 生成 README.md 
 ```bash
 python download.py run --limit 20      # 先试跑 20 篇
 python download.py run --min-if 15     # 只下 IF≥15 的
+python download.py run --only-oa       # 只下确认开放获取的（先跑过 resolve.py oa）
 python download.py status              # 已下/还差多少，按期刊统计
+python resolve.py report               # 免订阅可达性总览（OA / 非 OA / 未查）
 python xmol.py list                    # 看候选池
 python verify.py --check               # 只做校验表
 ```
+
+### 为什么不换谷歌学术，而用 resolve.py 补短板
+
+谷歌学术在本网络下**根本连不上**（实测 `scholar.google.com` 21 秒超时、`google.com` 连接被重置），
+而且它本身不托管全文——点进去还是落到同一个出版社页面，**换检索源不改变能否下载**。
+XMOL 不可替代的点是结果里直接带 `impactFactor` 字段，IF 筛选一步做完。
+
+XMOL 的两个短板由两个**免登录、无反爬**的结构化接口补上：
+
+| 命令 | 接口 | 解决什么 |
+|---|---|---|
+| `resolve.py fill` | Crossref | XMOL 有约 6% 条目**没有 DOI**；Crossref 按标题反查规范 DOI，并能发现 XMOL 期刊标错（标成 PRL 实为 PRB，按排除规则剔除） |
+| `resolve.py oa` | OpenAlex | 事先知道**哪些是开放获取、免费全文在哪**，避免对必然失败的付费文章白跑一遍（每篇约 40 秒） |
+
+实测（关键词 `Altermagnetism`，112 篇候选）：开放获取 **71 篇**、非 OA 34 篇、未查 7 篇。
+非 OA 中 IF 最高的为 Nature Materials / Nature Nanotechnology / Nature Physics / ACS Nano / JACS
+——这些要么靠机构订阅，要么只能手动。
 
 ### 过滤规则
 
@@ -169,14 +190,22 @@ python verify.py --check               # 只做校验表
 ├── oswin.py                   系统级鼠标键盘（SetCursorPos + mouse_event + SendInput）
 ├── driven.py                  找可驱动窗口的 OS 窗口句柄/矩形、置前台
 ├── paperlib.py                PDF 校验、arXiv/OpenAlex 查询、工具函数
-├── launch.py                  启动可驱动窗口（含 PDF 强制下载 + 下载目录）
+├── launch.py                  启动可驱动窗口（含 PDF 强制下载 + 禁用 onboarding 劫持）
 ├── xmol.py                    XMOL 检索 / 逐页抓取 / 过滤
+├── resolve.py                 Crossref 补 DOI + OpenAlex 判开放获取（免登录、无反爬）
 ├── download.py                四条路线下载 + 断点续跑（状态存 statusFile）
 └── verify.py                  校验 + README.md + 手动下载清单
 ```
 
 上次实测战绩（关键词 `Altermagnetism`，IF≥5 且排除 PRB/PRM/APL）：
-候选 105 篇 → **成功 79 篇**，其中 Nature 1、Nature Materials 1、Nature Physics 1、Nature Nanotechnology 1、
-Nature Communications 4、PRL 20+、JACS 9、npj 系 11、RSC 综述 1；
-剩余 26 篇集中在 Nano Letters（13）与 Elsevier 3 篇（ScienceDirect 反爬）等，
-已生成手动下载清单。
+候选 112 篇 → **成功 97 篇正式版 PDF**，其中 Nature 2、Nature Materials 1、Nature Physics 1、
+Nature Nanotechnology 1、Nature Communications 4、PRL 20+、PRX 3、JACS 9、Nano Letters 13（全部）、
+ACS Nano、ACS Materials Au、RSC 综述与 Nanoscale、npj 系 11、Advanced Materials 等。
+
+剩余 8 篇未获取，原因均已写进交付清单：
+| 原因 | 篇数 | 说明 |
+|---|---|---|
+| 该刊无订阅权限 | 1 | Nature Reviews Materials（页面显示 Subscribe） |
+| Wiley 拒绝脚本下载 | 2 | Advanced Science、Rare Metals；页面有 Download PDF 按钮，浏览器里手点可下 |
+| 出版社反爬 | 5 | ScienceDirect ×3、IOP（Radware 验证码）、Elsevier |
+其余 7 条为 XMOL 里无 DOI 的重复条目（Crossref 也查不到，多为预印本条目）。

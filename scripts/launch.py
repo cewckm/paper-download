@@ -59,6 +59,13 @@ def write_pdf_prefs():
     data.setdefault("plugins", {})["always_open_pdf_externally"] = True
     data.setdefault("download", {})["prompt_for_download"] = False
     data["download"]["default_directory"] = dest
+    # A brand-new Edge profile hijacks every navigation to edge://nurturing/ (first-run
+    # onboarding). It is sticky across restarts and silently breaks all page reads, so
+    # switch it off up front.
+    data["should_reset_nurturing"] = False
+    data.setdefault("edge", {})["nurturing"] = False
+    data.setdefault("browser", {})["should_reset_nurturing"] = False
+    data.setdefault("edge_nurturing", {})["completed"] = True
     with open(prefs_path, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False)
     return prefs_path
@@ -80,6 +87,10 @@ def launch():
         "--remote-allow-origins=*",
         f"--user-data-dir={CFG['profileDir']}",
         "--no-first-run", "--no-default-browser-check",
+        # Disable the built-in PDF viewer so a PDF URL downloads instead of rendering:
+        # the Preferences flag alone is not honoured in a fresh profile.
+        "--disable-features=PdfOopif",
+        "--disable-pdf-extension",
         "--window-size=1500,1000", "--window-position=40,20",
         "about:blank",
     ]
