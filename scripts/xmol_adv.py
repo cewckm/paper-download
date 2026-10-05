@@ -1,17 +1,27 @@
-"""xmol_adv.py — XMOL advanced search the way the site itself does it (full pagination).
+"""xmol_adv.py — XMOL advanced search done the way the site itself does it (full pagination).
 
 The public /paper/doc/search endpoint is a dead end: it returns only the first 30 rows, ignores
-pageNo, and silently drops date/IF conditions. The UI uses a different flow, captured live:
+pageNo, and silently drops the date / IF conditions. Two better paths exist; this module tries the
+API one first because it needs no form interaction.
 
-    1. fill the 高级检索 form (keyword + 出版时间 + IF) and submit
-       -> the browser POSTs /spaceApi/next/paper/doc/createPaperAdvancedSearch, which STORES the
-          criteria server-side and returns a searchLogId
-    2. GET /spaceApi/next/paper/doc/searchPaperAdvancedById?searchLogId=..&pageNo=N
-       -> that stored query, properly paginated (totalRecord / totalPage are real)
+PATH A (preferred, no form needed) — POST the criteria, then page the stored query:
+    POST /spaceApi/next/paper/doc/createPaperAdvancedSearch
+    {"keywordList":[{"operator":"AND","option":"<kw>"}],"authorList":[],"affiliation":null,
+     "keywordsRange":2,"hasFollowJournal":false,"journals":[],"followJournalGroupList":[],
+     "publishDateStart":null|"YYYY","publishDateEnd":null|"YYYY",
+     "impactFactorStart":<int>|null,"impactFactorEnd":<int>|null}
+      -> {obj:{id:"<searchLogId>"}}
+    GET  /spaceApi/next/paper/doc/searchPaperAdvancedById?searchLogId=..&pageNo=N
+      -> that stored query, properly paginated (totalRecord / totalPage are real)
 
-Measured: keyword "Altermagnetism" + 出版时间 2026 + IF 5  =>  196 hits, 7 pages, all retrieved.
+  ⚠ publishDateStart/End want a YEAR STRING ("2025"). An ISO date ("2025-12-31") returns HTTP 400.
 
-    python xmol_adv.py "Altermagnetism" 2026 5 [out.json]
+PATH B (fallback) — drive the 高级检索 form (keyword box + date box + IF box) and press 立即搜索.
+
+Measured with PATH A: keyword "Altermagnetism" + 出版时间 ≤2025 + IF≥5 => 225 hits, 8 pages, all
+retrieved; keyword + 2026 + IF≥5 => 196 hits, 7 pages. The legacy endpoint returned 30.
+
+    python xmol_adv.py "Altermagnetism" 2025 5 [out.json] [--start YEAR] [--title-only]
 """
 import json
 import os
@@ -24,6 +34,19 @@ import config  # noqa
 import download as D  # noqa
 
 CFG = config.load()
+
+CREATE = r"""
+async (payload) => {
+  const r = await fetch('/spaceApi/next/paper/doc/createPaperAdvancedSearch', {
+    method: 'POST', credentials: 'include',
+    headers: {'Accept': 'application/json', 'Content-Type': 'application/json'},
+    body: JSON.stringify(payload)});
+  const t = await r.text();
+  let j = null; try { j = JSON.parse(t); } catch (e) {}
+  const id = (j && j.obj && (j.obj.id || j.obj.searchLogId)) || null;
+  return JSON.stringify({status: r.status, ok: !!(j && j.success), id: id, raw: t.slice(0, 200)});
+}
+"""
 
 FILL = r"""
 (kw, year, ifMin) => {
@@ -76,26 +99,59 @@ def clean(s):
     return re.sub(r"<[^>]+>", "", s or "").strip()
 
 
-def harvest(keyword="Altermagnetism", year=2026, if_min=5, max_pages=30):
+def harvest(keyword="Altermagnetism", year=2026, if_min=5, max_pages=30, year_start=None,
+            title_only=False, use_form=False):
+    """Return the full result set for one advanced query.
+
+    year      : upper bound (出版时间 到) — passed as a YEAR STRING
+    year_start: optional lower bound (出版时间 从)
+    """
     ws = D.page_ws()
     ws.call("Page.enable")
     ws.call("Runtime.enable")
-    if "x-mol.com/paper/search" not in (D.js(ws, "location.href") or ""):
+    if "x-mol.com" not in (D.js(ws, "location.href") or ""):
         D.js(ws, "location.href='https://www.x-mol.com/paper/search/qadv'")
         D.wait_ready(ws, 30)
         time.sleep(6)
-    print("填表:", D.js(ws, f"({FILL})({json.dumps(keyword)}, {json.dumps(str(year))}, {json.dumps(str(if_min))})"))
-    time.sleep(1)
-    print("提交:", D.js(ws, f"({SUBMIT})()"))
-    time.sleep(10)
-    url = D.js(ws, "location.href") or ""
-    m = re.search(r"searchLogId=([0-9a-f\-]+)", url)
-    if not m:
-        raise RuntimeError("没有拿到 searchLogId（提交未生效？）: " + url)
-    log_id = m.group(1)
-    shown = D.js(ws, r"""(()=>{const t=document.body.innerText;
-        const m=t.match(/共有\s*([\d,]+)\s*个结果/); return m?m[1]:null;})()""")
-    print(f"页面显示命中: {shown} | searchLogId={log_id}")
+
+    def year_str(v):
+        if v is None or v == "":
+            return None
+        v = str(v).strip()
+        m = re.match(r"^(\d{4})", v)
+        return m.group(1) if m else None          # ISO dates are rejected with HTTP 400
+
+    payload = {
+        "keywordList": [{"operator": "AND", "option": keyword}],
+        "authorList": [], "affiliation": None,
+        "keywordsRange": 1 if title_only else 2, "hasFollowJournal": False,
+        "journals": [], "followJournalGroupList": [],
+        "publishDateStart": year_str(year_start), "publishDateEnd": year_str(year),
+        "impactFactorStart": int(float(if_min)) if if_min else None, "impactFactorEnd": None,
+    }
+    log_id = None
+    if not use_form:
+        print("提交检索条件:", json.dumps(payload, ensure_ascii=False))
+        res = json.loads(D.js(ws, f"({CREATE})({json.dumps(payload)})", timeout=120000) or "{}")
+        print("create 返回:", res.get("status"), res.get("ok"), "id:", res.get("id"))
+        log_id = res.get("id")
+
+    shown = None
+    if not log_id:                                  # PATH B: drive the form
+        print("改用表单提交（填表 + 立即搜索）…")
+        print("填表:", D.js(ws, f"({FILL})({json.dumps(keyword)}, {json.dumps(str(year))}, "
+                                f"{json.dumps(str(if_min))})"))
+        time.sleep(1)
+        print("提交:", D.js(ws, f"({SUBMIT})()"))
+        time.sleep(10)
+        url = D.js(ws, "location.href") or ""
+        m = re.search(r"searchLogId=([0-9a-f\-]+)", url)
+        if not m:
+            raise RuntimeError("没有拿到 searchLogId（提交未生效？）: " + url)
+        log_id = m.group(1)
+        shown = D.js(ws, r"""(()=>{const t=document.body.innerText;
+            const m=t.match(/共有\s*([\d,]+)\s*个结果/); return m?m[1]:null;})()""")
+        print(f"页面显示命中: {shown} | searchLogId={log_id}")
 
     first = json.loads(D.js(ws, f"({PAGE})({json.dumps(log_id)}, 1)", timeout=120000) or "{}")
     total, pages = first.get("total"), first.get("totalPage") or 1
@@ -122,17 +178,25 @@ def harvest(keyword="Altermagnetism", year=2026, if_min=5, max_pages=30):
             "abstract": clean(r.get("summary"))[:900], "searchKeyword": keyword,
         }
     out = list(seen.values())
-    return {"keyword": keyword, "year": year, "ifMin": float(if_min), "searchLogId": log_id,
+    return {"keyword": keyword, "yearTo": year, "yearFrom": year_start, "ifMin": float(if_min),
+            "keywordsRange": 1 if title_only else 2, "searchLogId": log_id,
             "uiReportedTotal": shown, "apiTotal": total, "rowsFetched": len(rows),
             "candidates": sorted(out, key=lambda x: -(x["if"] or 0))}
 
 
 def main():
-    kw = sys.argv[1] if len(sys.argv) > 1 else "Altermagnetism"
-    year = sys.argv[2] if len(sys.argv) > 2 else "2026"
-    if_min = sys.argv[3] if len(sys.argv) > 3 else "5"
-    out = sys.argv[4] if len(sys.argv) > 4 else os.path.join(CFG["workDir"], "xmol_adv.json")
-    payload = harvest(kw, year, if_min)
+    args = [a for a in sys.argv[1:] if not a.startswith("--")]
+    flags = [a for a in sys.argv[1:] if a.startswith("--")]
+    kw = args[0] if len(args) > 0 else "Altermagnetism"
+    year = args[1] if len(args) > 1 else "2026"
+    if_min = args[2] if len(args) > 2 else "5"
+    out = args[3] if len(args) > 3 else os.path.join(CFG["workDir"], "xmol_adv.json")
+    year_start = None
+    for f in flags:
+        if f.startswith("--start="):
+            year_start = f.split("=", 1)[1]
+    payload = harvest(kw, year, if_min, year_start=year_start,
+                      title_only="--title-only" in flags, use_form="--form" in flags)
     with open(out, "w", encoding="utf-8") as f:
         json.dump(payload, f, ensure_ascii=False, indent=1)
     n = len(payload["candidates"])

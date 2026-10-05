@@ -200,11 +200,13 @@ JS_FETCH = r"""
 def route_direct(rec):
     """1) plain HTTP against a known-good URL.
 
-    Publishers that don't like scripted clients answer 403 / an HTML interstitial here while
-    the browser sails through a moment later — remember that and stop retrying them.
+    Publishers that dislike scripted clients answer 403 / an HTML interstitial here while the
+    browser sails through a moment later. Give each DOI prefix a couple of attempts before
+    giving up on it — blocking a whole prefix on the first failure silently starves the
+    *open-access* papers from the same publisher (e.g. Nature Communications behind 10.1038).
     """
-    global _DIRECT_BLOCKED
-    if rec.get("doi") and (rec["doi"].split("/")[0]) in _DIRECT_BLOCKED:
+    pref = (rec.get("doi") or "").split("/")[0]
+    if pref and _DIRECT_FAILS.get(pref, 0) >= _DIRECT_FAIL_LIMIT:
         return None
     for u in direct_urls(rec):
         st, hdrs, data = pl.get(u, timeout=90, maxbytes=60_000_000,
@@ -216,17 +218,17 @@ def route_direct(rec):
                 f.write(data)
             return {"file": os.path.basename(path), "pages": pages, "route": "direct",
                     "url": u, "bytes": len(data)}
-        if st in (401, 403, 429) or (isinstance(data, bytes) and b"<!DOCTYPE" in data[:200].upper()):
-            pref = (rec.get("doi") or "").split("/")[0]
-            if pref:
-                _DIRECT_BLOCKED.add(pref)
-            print(f"    direct blocked ({st}) for {pref} — switching straight to browser routes",
-                  flush=True)
-            break
+        if pref:
+            _DIRECT_FAILS[pref] = _DIRECT_FAILS.get(pref, 0) + 1
+            if _DIRECT_FAILS[pref] == _DIRECT_FAIL_LIMIT:
+                print(f"    direct route disabled for {pref} after "
+                      f"{_DIRECT_FAIL_LIMIT} failures", flush=True)
+        break
     return None
 
 
-_DIRECT_BLOCKED = set()
+_DIRECT_FAILS = {}
+_DIRECT_FAIL_LIMIT = 3
 
 
 def route_session_fetch(ws, rec, land):

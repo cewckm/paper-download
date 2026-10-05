@@ -99,20 +99,35 @@ python verify.py --check               # 只做校验表
 | 接口 | 行为 |
 |---|---|
 | `/spaceApi/next/paper/doc/search?option=…&pageNo=N` | **只返回前 30 条**；`pageNo=2` 返回空；`start/offset/page/pageNum` 全部无效；`startDate/endDate/startYear/…` 等日期参数被静默忽略 |
-| `/spaceApi/next/paper/doc/createPaperAdvancedSearch` | UI 提交高级检索时调用，**把关键词/出版时间/IF 条件存在服务端**并返回 `searchLogId` |
-| `/spaceApi/next/paper/doc/searchPaperAdvancedById?searchLogId=…&pageNo=N` | 取**上面那份**检索结果的第 N 页；`totalRecord`/`totalPage` 真实可用 |
+| `POST /spaceApi/next/paper/doc/createPaperAdvancedSearch` | **把检索条件存到服务端**并返回 `obj.id`（即 searchLogId） |
+| `GET /spaceApi/next/paper/doc/searchPaperAdvancedById?searchLogId=…&pageNo=N` | 取**上面那份**检索结果的第 N 页；`totalRecord`/`totalPage` 真实可用 |
 
-**正确流程**（`xmol_adv.py` 已实现）：
+**推荐流程（PATH A，`xmol_adv.py` 默认走这条，不需要操作表单）**
 
-1. 在窗口里填「关键词 + 出版时间 + IF」，点**立即搜索**（真实事件）；
-2. 从地址栏取 `searchLogId`；
-3. 用 `searchPaperAdvancedById` 翻完 `totalPage` 页。
+```bash
+python xmol_adv.py "Altermagnetism" 2025 5                        # 关键词 / 出版时间到 / IF 下限
+python xmol_adv.py "Altermagnetism" 2025 5 out.json --start 2021  # 限定起始年
+python xmol_adv.py "Altermagnetism" 2026 5 --title-only           # 只在标题中搜索
+python xmol_adv.py "Altermagnetism" 2026 5 --form                 # 改用表单提交（兜底 PATH B）
+```
 
-实测：关键词 `Altermagnetism` + 出版时间 2026 + IF 5 → **196 条命中、7 页全部取回**。
-而错误流程在同一条件下只拿到 63 条（且 `total` 恒显示为上限 300）。
+提交的 payload 形状（字段名照抄 UI，少一个就 400）：
 
-> `IF` 的真实参数名是 `impactFactorStart` / `impactFactorEnd`（`ifStart` 无效）；
-> `journalId` 也是有效切面；`pageNo` 配合 `searchPaperAdvancedById` 才真正翻页。
+```json
+{"keywordList":[{"operator":"AND","option":"<关键词>"}],"authorList":[],"affiliation":null,
+ "keywordsRange":2,"hasFollowJournal":false,"journals":[],"followJournalGroupList":[],
+ "publishDateStart":null,"publishDateEnd":"2025",
+ "impactFactorStart":5,"impactFactorEnd":null}
+```
+
+> **日期必须是年份字符串**（`"2025"`）。传 ISO 日期 `"2025-12-31"` 会 **HTTP 400**。
+> 这也解释了为什么"用 DOM 填日期框"无效——日期框是组件，直接赋值不进入表单模型。
+
+**实测**：`Altermagnetism` + 出版时间 ≤2025 + IF≥5 → **225 条 / 8 页全部取回**；
+`Altermagnetism` + 2026 + IF≥5 → **196 条 / 7 页**。用旧接口同样条件只拿到 30 条。
+
+> `keywordsRange`：`2` = 标题+摘要（默认），`1` = 只在标题中搜索；
+> `journalId` 也是有效切面（例如 `journalId=1` 是 Nature）。
 
 ### 出版社准入表（`access_map.py`）
 

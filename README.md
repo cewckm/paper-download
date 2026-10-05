@@ -67,10 +67,11 @@ Measured on keyword `Altermagnetism` with 112 candidates: 71 open access, 34 not
 ## Key lessons (full version in SKILL.md)
 
 - **XMOL has two different search APIs and picking the wrong one silently truncates the results**
-  to the first 30 rows. The full flow is: submit the advanced form (`createPaperAdvancedSearch`
-  stores the criteria server-side) → page through `searchPaperAdvancedById?searchLogId=…&pageNo=N`.
-  Measured: `Altermagnetism` + 2026 + IF 5 → **196 hits, 7 pages, all retrieved**; the wrong flow
-  returned only 63;
+  to the first 30 rows. The full flow (`xmol_adv.py`, default) is: `POST
+  createPaperAdvancedSearch` to store the criteria server-side → page through
+  `searchPaperAdvancedById?searchLogId=…&pageNo=N`. **Dates must be year strings** (`"2025"`); an
+  ISO date returns HTTP 400. Measured: 出版时间 ≤2025 + IF≥5 → **225 hits, 8 pages**;
+  2026 + IF≥5 → **196 hits, 7 pages**; the legacy endpoint gives 30;
 - a browser started with the **default profile refuses to open a DevTools port** — use a
   dedicated profile;
 - you **must disable the built-in PDF viewer** (`plugins.always_open_pdf_externally` plus

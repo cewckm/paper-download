@@ -59,9 +59,11 @@ XMOL 的两个短板由两个**免登录、无反爬**的结构化接口补上�
 
 ## 关键经验（SKILL.md 里有完整版）
 
-- **XMOL 有两套检索接口，用错会静默截断成"前 30 条"**。全量流程是：提交高级检索表单
-  （`createPaperAdvancedSearch` 把条件存到服务端）→ 用 `searchPaperAdvancedById?searchLogId=…&pageNo=N`
-  翻页。实测 `Altermagnetism` + 2026 + IF 5 → **196 条、7 页全部取回**；用错接口只拿到 63 条；
+- **XMOL 有两套检索接口，用错会静默截断成"前 30 条"**。全量流程（`xmol_adv.py` 默认）：
+  先 `POST createPaperAdvancedSearch` 把条件存到服务端、拿到 `searchLogId`，再用
+  `searchPaperAdvancedById?searchLogId=…&pageNo=N` 翻页。**日期必须传年份字符串**（`"2025"`），
+  传 ISO 日期会 HTTP 400。实测 `Altermagnetism` + 出版时间 ≤2025 + IF≥5 → **225 条 / 8 页全取**；
+  + 2026 + IF≥5 → **196 条 / 7 页**；用旧的 `/paper/doc/search` 只有 30 条；
 - **默认 profile 的浏览器打不开调试端口**，必须用独立 profile 启动；
 - **必须禁用内置 PDF 阅读器**（`plugins.always_open_pdf_externally` 配合
   `Page.setDownloadBehavior`），否则点击 PDF 永远不会落盘；
