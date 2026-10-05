@@ -70,13 +70,15 @@ XMOL 给的 DOI 常常是全小写，`download.py` 里已做归一化；
 cd "{{SCRIPTS_DIR}}"
 
 python launch.py                       # 1) 启动可驱动的窗口（含 PDF 强制下载配置）
-python xmol.py search "Altermagnetism" # 2) 在窗口里用真实键盘敲关键词并检索（会过验证码那关）
-python xmol.py harvest "Altermagnetism" # 3) 逐页抓结果 → 过滤 IF/期刊 → 存候选池
-python resolve.py fill                 # 4) 给 XMOL 没给 DOI 的条目补规范 DOI（Crossref）
-python resolve.py oa                   # 5) 标注是否开放获取 + 免费全文地址（OpenAlex）
-python download.py run                 # 6) 逐篇按四条路线下载 + 校验
+python xmol_adv.py "Altermagnetism" 2026 5   # 2) 高级检索：关键词+年份+IF，**完整翻页**
+python resolve.py fill                 # 3) 给 XMOL 没给 DOI 的条目补规范 DOI（Crossref）
+python resolve.py oa                   # 4) 标注是否开放获取 + 免费全文地址（OpenAlex）
+python access_map.py show              # 5) 查看出版社准入表（哪些直接跳过）
+python download.py run                 # 6) 逐篇按四条路线下载 + 校验（自动跳过无权限出版社）
 python verify.py                       # 7) 校验全部 PDF + 生成 README.md 与手动下载清单
 ```
+
+> `xmol.py`（旧路径）保留作为"只取前 30 条"的快速摸底；**要全量必须用 `xmol_adv.py`**。
 
 常用参数：
 
@@ -86,9 +88,50 @@ python download.py run --min-if 15     # 只下 IF≥15 的
 python download.py run --only-oa       # 只下确认开放获取的（先跑过 resolve.py oa）
 python download.py status              # 已下/还差多少，按期刊统计
 python resolve.py report               # 免订阅可达性总览（OA / 非 OA / 未查）
-python xmol.py list                    # 看候选池
+python access_map.py probe             # 重新探测各出版社可达性
 python verify.py --check               # 只做校验表
 ```
+
+### ⚠️ 最容易踩的坑：XMOL 检索的两个接口（实测）
+
+**用错接口会让"全量"变成"抽样"，而且毫无报错。**
+
+| 接口 | 行为 |
+|---|---|
+| `/spaceApi/next/paper/doc/search?option=…&pageNo=N` | **只返回前 30 条**；`pageNo=2` 返回空；`start/offset/page/pageNum` 全部无效；`startDate/endDate/startYear/…` 等日期参数被静默忽略 |
+| `/spaceApi/next/paper/doc/createPaperAdvancedSearch` | UI 提交高级检索时调用，**把关键词/出版时间/IF 条件存在服务端**并返回 `searchLogId` |
+| `/spaceApi/next/paper/doc/searchPaperAdvancedById?searchLogId=…&pageNo=N` | 取**上面那份**检索结果的第 N 页；`totalRecord`/`totalPage` 真实可用 |
+
+**正确流程**（`xmol_adv.py` 已实现）：
+
+1. 在窗口里填「关键词 + 出版时间 + IF」，点**立即搜索**（真实事件）；
+2. 从地址栏取 `searchLogId`；
+3. 用 `searchPaperAdvancedById` 翻完 `totalPage` 页。
+
+实测：关键词 `Altermagnetism` + 出版时间 2026 + IF 5 → **196 条命中、7 页全部取回**。
+而错误流程在同一条件下只拿到 63 条（且 `total` 恒显示为上限 300）。
+
+> `IF` 的真实参数名是 `impactFactorStart` / `impactFactorEnd`（`ifStart` 无效）；
+> `journalId` 也是有效切面；`pageNo` 配合 `searchPaperAdvancedById` 才真正翻页。
+
+### 出版社准入表（`access_map.py`）
+
+同一台机器上，各出版社的可达性差别很大，且**直连探测看不出浏览器会话有没有订阅权**。
+所以准入表以**实战结果**为准，并让下载器据此跳过必然失败的论文（每篇省约 40 秒）：
+
+| 判定 | 含义 | 本机实测 |
+|---|---|---|
+| `reachable` | 有办法拿到 PDF（直连 / 页面内点击 / session-fetch） | Nature 系、APS、ACS、RSC、OUP、Springer、SciPost |
+| `refused` | 出版社拒绝（脚本与浏览器内都返回 HTML） | Wiley（10.1002） |
+| `captcha` | 反爬挑战自动化过不去 | Elsevier（10.1016）、IOP（10.1088） |
+
+```bash
+python access_map.py probe   # 直连探测一遍（只用于补我们没有经验的出版社）
+python access_map.py show    # 查看当前判定与判据
+```
+
+`download.py run` 会自动跳过 `refused`/`captcha` 的论文并把原因写进状态表；
+实测某次 196 篇里有 51 篇属于这类，直接省掉约 34 分钟无效尝试。
 
 ### 为什么不换谷歌学术，而用 resolve.py 补短板
 
@@ -191,8 +234,10 @@ XMOL 的两个短板由两个**免登录、无反爬**的结构化接口补上�
 ├── driven.py                  找可驱动窗口的 OS 窗口句柄/矩形、置前台
 ├── paperlib.py                PDF 校验、arXiv/OpenAlex 查询、工具函数
 ├── launch.py                  启动可驱动窗口（含 PDF 强制下载 + 禁用 onboarding 劫持）
-├── xmol.py                    XMOL 检索 / 逐页抓取 / 过滤
+├── xmol_adv.py                **XMOL 高级检索全量抓取**（create + 分页，推荐）
+├── xmol.py                    旧路径：单查询只取前 30 条，适合快速摸底
 ├── resolve.py                 Crossref 补 DOI + OpenAlex 判开放获取（免登录、无反爬）
+├── access_map.py              出版社准入表：refused/captcha 的直接跳过
 ├── download.py                四条路线下载 + 断点续跑（状态存 statusFile）
 └── verify.py                  校验 + README.md + 手动下载清单
 ```

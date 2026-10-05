@@ -30,17 +30,17 @@
 ```bash
 cd scripts
 
-python launch.py                        # 启动可驱动的浏览器窗口
-python xmol.py search "Altermagnetism"  # 在窗口里真实输入关键词检索
-python xmol.py harvest "Altermagnetism" # 逐页抓结果 → 按 IF/期刊过滤
-python resolve.py fill                  # 补全缺失的 DOI（Crossref）
-python resolve.py oa                    # 标注开放获取与免费全文地址（OpenAlex）
-python download.py run                  # 四级路线下载 + PDF 校验
-python verify.py                        # 生成 README 清单 + 手动下载清单
+python launch.py                             # 启动可驱动的浏览器窗口
+python xmol_adv.py "Altermagnetism" 2026 5   # 高级检索：关键词+年份+IF，**完整翻页**
+python resolve.py fill                       # 补全缺失的 DOI（Crossref）
+python resolve.py oa                         # 标注开放获取与免费全文地址（OpenAlex）
+python access_map.py show                    # 查看哪些出版社在本机拿不到
+python download.py run                       # 四级路线下载 + PDF 校验
+python verify.py                             # 生成 README 清单 + 手动下载清单
 ```
 
 常用参数：`download.py run --limit 20`、`--min-if 15`、`--only-oa`、`download.py status`、
-`resolve.py report`。
+`resolve.py report`、`access_map.py probe`。
 
 ## 为什么不换谷歌学术
 
@@ -59,14 +59,19 @@ XMOL 的两个短板由两个**免登录、无反爬**的结构化接口补上�
 
 ## 关键经验（SKILL.md 里有完整版）
 
+- **XMOL 有两套检索接口，用错会静默截断成"前 30 条"**。全量流程是：提交高级检索表单
+  （`createPaperAdvancedSearch` 把条件存到服务端）→ 用 `searchPaperAdvancedById?searchLogId=…&pageNo=N`
+  翻页。实测 `Altermagnetism` + 2026 + IF 5 → **196 条、7 页全部取回**；用错接口只拿到 63 条；
 - **默认 profile 的浏览器打不开调试端口**，必须用独立 profile 启动；
 - **必须禁用内置 PDF 阅读器**（`plugins.always_open_pdf_externally` 配合
   `Page.setDownloadBehavior`），否则点击 PDF 永远不会落盘；
 - **APS 的 DOI 大小写敏感**：`physrevlett` → 404，`PhysRevLett` → 200；
-- **XMOL 检索接口硬上限 300 条**（10 页 × 30），页面显示的总数可能更大；
 - **反爬拦的是脚本 HTTP，不是浏览器**：同一台机器同一秒，脚本 403、浏览器 200；
 - 出版社**拒绝"直接打开 PDF 地址"**，但接受**点击页面上的 Download PDF**——点击要在页面内派发，
-  不要用屏幕坐标（窗口一动就失效）。
+  不要用屏幕坐标（窗口一动就失效）；
+- **各出版社可达性差别极大**，而且直连探测**看不出浏览器会话有没有订阅权**。因此
+  `access_map.py` 以真实下载结果记录判定（`reachable`/`refused`/`captcha`），
+  `download.py` 据此跳过必然失败的论文——某次 196 篇里跳掉 51 篇，省了约 34 分钟无效重试。
 
 ## 目录
 
@@ -74,8 +79,10 @@ XMOL 的两个短板由两个**免登录、无反爬**的结构化接口补上�
 scripts/
 ├── config.py       路径/端口/过滤规则
 ├── launch.py       启动可驱动窗口（预置 PDF 强制下载）
-├── xmol.py         XMOL 检索 / 逐页抓取 / 过滤
+├── xmol_adv.py     XMOL 高级检索全量抓取（推荐）
+├── xmol.py         旧路径：单查询只取前 30 条，适合快速摸底
 ├── resolve.py      Crossref 补 DOI + OpenAlex 开放获取预判
+├── access_map.py   出版社准入表（refused/captcha 直接跳过）
 ├── download.py     四级下载路线 + 断点续跑
 ├── verify.py       校验 + README 清单 + 手动下载清单
 ├── cdp.py          极简 CDP 客户端（纯标准库 WebSocket）

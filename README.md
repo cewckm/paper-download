@@ -35,17 +35,17 @@ subscription). No arXiv, no third-party mirrors.
 ```bash
 cd scripts
 
-python launch.py                        # start the driven browser window
-python xmol.py search "Altermagnetism"  # type the keyword into XMOL for real
-python xmol.py harvest "Altermagnetism" # page through the results, filter by IF/journal
-python resolve.py fill                  # fill in missing DOIs (Crossref)
-python resolve.py oa                    # mark open access + free full-text URLs (OpenAlex)
-python download.py run                  # four routes, with PDF validation
-python verify.py                        # write README index + manual-work list
+python launch.py                             # start the driven browser window
+python xmol_adv.py "Altermagnetism" 2026 5   # advanced search: keyword + year + IF, FULL pagination
+python resolve.py fill                       # fill in missing DOIs (Crossref)
+python resolve.py oa                         # mark open access + free full-text URLs (OpenAlex)
+python access_map.py show                    # which publishers are unreachable here
+python download.py run                       # four routes, with PDF validation
+python verify.py                             # write README index + manual-work list
 ```
 
 Useful flags: `download.py run --limit 20`, `--min-if 15`, `--only-oa`, `download.py status`,
-`resolve.py report`.
+`resolve.py report`, `access_map.py probe`.
 
 ## Why not Google Scholar
 
@@ -66,16 +66,24 @@ Measured on keyword `Altermagnetism` with 112 candidates: 71 open access, 34 not
 
 ## Key lessons (full version in SKILL.md)
 
-- A browser started with the **default profile refuses to open a DevTools port** — use a
+- **XMOL has two different search APIs and picking the wrong one silently truncates the results**
+  to the first 30 rows. The full flow is: submit the advanced form (`createPaperAdvancedSearch`
+  stores the criteria server-side) → page through `searchPaperAdvancedById?searchLogId=…&pageNo=N`.
+  Measured: `Altermagnetism` + 2026 + IF 5 → **196 hits, 7 pages, all retrieved**; the wrong flow
+  returned only 63;
+- a browser started with the **default profile refuses to open a DevTools port** — use a
   dedicated profile;
 - you **must disable the built-in PDF viewer** (`plugins.always_open_pdf_externally` plus
   `Page.setDownloadBehavior`), otherwise clicking a PDF never writes a file;
 - **APS DOIs are case sensitive**: `physrevlett` → 404, `PhysRevLett` → 200;
-- **XMOL's search API caps at 300 rows** (10 pages × 30) even when the page reports more;
 - **bot walls stop scripted HTTP, not the browser** — same machine, same second: script gets 403,
   browser gets 200;
 - publishers reject a *bare navigation* to their PDF URL but honour a **click on the Download PDF
-  control** — dispatch the click in the page, not by screen coordinates (the window moves).
+  control** — dispatch the click in the page, not by screen coordinates (the window moves);
+- **publishers differ wildly in reachability**, and a plain HTTP probe cannot tell whether the
+  *browser session* holds a subscription. `access_map.py` therefore records verdicts from real
+  download attempts (`reachable` / `refused` / `captcha`) and `download.py` skips the hopeless ones
+  — in one run that skipped 51 of 196 papers and saved ~34 minutes of futile retries.
 
 ## Layout
 
@@ -83,8 +91,10 @@ Measured on keyword `Altermagnetism` with 112 candidates: 71 open access, 34 not
 scripts/
 ├── config.py       paths, port, filter rules
 ├── launch.py       start the driven window (PDF download pre-configured)
-├── xmol.py         XMOL search / pagination / filtering
+├── xmol_adv.py     XMOL advanced search, FULL pagination (recommended)
+├── xmol.py         legacy single-query probe (first 30 rows only)
 ├── resolve.py      Crossref DOI fill + OpenAlex open-access pre-flight
+├── access_map.py   per-publisher reachability verdicts (skip refused/captcha)
 ├── download.py     four routes + resumable state
 ├── verify.py       validation + README index + manual-work list
 ├── cdp.py          minimal CDP client (stdlib-only WebSocket)

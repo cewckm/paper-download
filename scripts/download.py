@@ -407,6 +407,26 @@ def run(limit=None, min_if=None, routes=None, only_oa=False):
     todo = [c for c in cands if not (status.get(c["paperId"], {}) or {}).get("ok")]
     if limit:
         todo = todo[:limit]
+
+    # Publishers this machine provably cannot reach (Wiley refuses, IOP/ScienceDirect bot walls):
+    # mark them once instead of spending ~40 s per paper discovering the same fact again.
+    try:
+        import access_map
+        blocked = [c for c in todo if access_map.is_blocked((c.get("doi") or " ").split("/")[0])]
+        if blocked and not only_oa:
+            print(f"跳过无法获取的出版社 {len(blocked)} 篇（先跑 access_map.py show 查看判据）:")
+            from collections import Counter
+            for pref, n in Counter((c["doi"] or "?").split("/")[0] for c in blocked).most_common():
+                print(f"   {pref} × {n} —— {access_map.note_for(pref)[:58]}")
+            for c in blocked:
+                status[c["paperId"]] = {**c, "ok": False, "file": None, "pages": 0,
+                                        "why": f"skipped: {access_map.note_for((c['doi'] or '').split('/')[0])}"}
+            todo = [c for c in todo if c not in blocked]
+            with open(CFG["statusFile"], "w", encoding="utf-8") as f:
+                json.dump(list(status.values()), f, ensure_ascii=False, indent=1)
+    except ImportError:
+        pass
+
     print(f"candidates: {len(cands)} | already ok: {len(cands) - len(todo)} | this run: {len(todo)}")
     added = 0
     for i, rec in enumerate(todo, 1):
